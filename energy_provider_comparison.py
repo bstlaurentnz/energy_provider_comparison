@@ -1,0 +1,656 @@
+#!/usr/bin/env python3
+"""
+Energy Provider Comparison Simulation
+Compares different electricity providers using historical solar and consumption data
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import argparse
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+from dataclasses import field
+import json
+
+@dataclass
+class TimeOfUsePeriod:
+    """Represents a time-of-use pricing period"""
+    name: str
+    buy_price: float
+    buyback_price: float
+    time_ranges: List[Dict]  # List of {"start_hour": int, "end_hour": int, "days": List[int]}
+
+@dataclass
+class EnergyProvider:
+    """Represents an energy provider with their pricing structure"""
+    name: str
+    daily_charge: float             # $/day fixed daily charge
+    time_periods: Optional[List[TimeOfUsePeriod]] = field(default=None)  # Time-of-use periods
+    
+    # Legacy fields for backward compatibility
+    peak_buy_price: Optional[float] = None
+    offpeak_buy_price: Optional[float] = None
+    night_buy_price: Optional[float] = None
+    peak_buyback_price: Optional[float] = None
+    offpeak_buyback_price: Optional[float] = None
+    night_buyback_price: Optional[float] = None
+    solar_buyback_price: Optional[float] = None  # Single buyback price (legacy)
+    
+    def __post_init__(self):
+        # If time_periods not provided, create from legacy fields
+        if self.time_periods is None:
+            self.time_periods = []
+            
+            # Handle 3-tier pricing if all prices are provided
+            if (self.peak_buy_price is not None and 
+                self.offpeak_buy_price is not None and 
+                self.night_buy_price is not None):
+                
+                # Peak: 7-11am and 5-9pm on weekdays
+                self.time_periods.append(TimeOfUsePeriod(
+                    name="peak",
+                    buy_price=self.peak_buy_price,
+                    buyback_price=self.peak_buyback_price or self.solar_buyback_price or 0,
+                    time_ranges=[
+                        {"start_hour": 7, "end_hour": 11, "days": [0, 1, 2, 3, 4]},
+                        {"start_hour": 17, "end_hour": 21, "days": [0, 1, 2, 3, 4]}
+                    ]
+                ))
+                
+                # Off-peak: 11am-5pm and 9-11pm weekdays, 7am-11pm weekends
+                self.time_periods.append(TimeOfUsePeriod(
+                    name="offpeak",
+                    buy_price=self.offpeak_buy_price,
+                    buyback_price=self.offpeak_buyback_price or self.solar_buyback_price or 0,
+                    time_ranges=[
+                        {"start_hour": 11, "end_hour": 17, "days": [0, 1, 2, 3, 4]},
+                        {"start_hour": 21, "end_hour": 23, "days": [0, 1, 2, 3, 4]},
+                        {"start_hour": 7, "end_hour": 23, "days": [5, 6]}
+                    ]
+                ))
+                
+                # Night: 11pm-7am every day
+                self.time_periods.append(TimeOfUsePeriod(
+                    name="night",
+                    buy_price=self.night_buy_price,
+                    buyback_price=self.night_buyback_price or self.solar_buyback_price or 0,
+                    time_ranges=[
+                        {"start_hour": 23, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+                    ]
+                ))
+            
+            # Handle legacy 2-tier pricing
+            elif self.peak_buy_price is not None and self.offpeak_buy_price is not None:
+                self.time_periods.append(TimeOfUsePeriod(
+                    name="peak",
+                    buy_price=self.peak_buy_price,
+                    buyback_price=self.solar_buyback_price or 0,
+                    time_ranges=[
+                        {"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}
+                    ]
+                ))
+                
+                self.time_periods.append(TimeOfUsePeriod(
+                    name="offpeak",
+                    buy_price=self.offpeak_buy_price,
+                    buyback_price=self.solar_buyback_price or 0,
+                    time_ranges=[
+                        {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+                    ]
+                ))
+    
+    def get_pricing(self, timestamp: pd.Timestamp) -> tuple:
+        """Get the electricity buy and buyback price for a given timestamp"""
+        hour = timestamp.hour
+        day_of_week = timestamp.weekday()
+        
+        # Check each time period to find the matching one
+        if self.time_periods:
+            for period in self.time_periods:
+                for time_range in period.time_ranges:
+                    if (day_of_week in time_range["days"] and
+                        self._hour_in_range(hour, time_range["start_hour"], time_range["end_hour"])):
+                        return period.buy_price, period.buyback_price, period.name
+        
+        # Fallback to first period if no match found
+        if self.time_periods:
+            return self.time_periods[0].buy_price, self.time_periods[0].buyback_price, "unknown"
+        
+        return 0.0, 0.0, "unknown"
+    
+    def _hour_in_range(self, hour: int, start_hour: int, end_hour: int) -> bool:
+        """Check if hour is within the specified range, handling midnight crossover"""
+        if end_hour > start_hour:
+            return start_hour <= hour < end_hour
+        else:
+            # Handle midnight crossover (e.g., 23-7)
+            return hour >= start_hour or hour < end_hour
+    
+    def get_buy_price(self, timestamp: pd.Timestamp) -> float:
+        """Legacy method for backward compatibility"""
+        buy_price, _, _ = self.get_pricing(timestamp)
+        return buy_price
+    
+    def get_buyback_price(self, timestamp: pd.Timestamp) -> float:
+        """Get the solar buyback price for a given timestamp"""
+        _, buyback_price, _ = self.get_pricing(timestamp)
+        return buyback_price
+    
+    def get_daily_charge(self, date: pd.Timestamp) -> float:
+        """Get the daily charge for a given date"""
+        return self.daily_charge
+
+class EnergyProviderComparison:
+    """Simulates energy costs across multiple providers using historical data"""
+    
+    def __init__(self):
+        self.providers: Dict[str, EnergyProvider] = {}
+        self.data: Optional[pd.DataFrame] = None
+        self.pv_column: Optional[str] = None
+        self.consumption_column: Optional[str] = None
+        self.results: Dict[str, pd.DataFrame] = {}
+        
+    def add_provider(self, provider: EnergyProvider):
+        """Add an energy provider to the comparison"""
+        self.providers[provider.name] = provider
+        print(f"Added provider: {provider.name}")
+    
+    def add_providers_from_config(self, config_path: str):
+        """Load providers from a JSON configuration file"""
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            for provider_data in config['providers']:
+                provider = EnergyProvider(**provider_data)
+                self.add_provider(provider)
+                
+        except Exception as e:
+            print(f"Error loading provider config: {e}")
+            return False
+        return True
+    
+    def load_data(self, csv_path: str):
+        """Load and prepare historical data from CSV file"""
+        try:
+            df = pd.read_csv(csv_path)
+            
+            # Handle different data formats (same as original solar_simulation.py)
+            if 'timestamp' in df.columns:
+                self.data = df.copy()
+                print(f"Loaded pivoted data with {len(df)} rows and columns: {list(df.columns)}")
+            else:
+                # Assume long format and pivot
+                df_pivot = df.pivot_table(
+                    index='last_changed' if 'last_changed' in df.columns else 'timestamp',
+                    columns='entity_id',
+                    values='state',
+                    aggfunc='mean'
+                ).reset_index()
+                
+                df_pivot.rename(columns={str(df_pivot.columns[0]): 'timestamp'}, inplace=True)
+                self.data = df_pivot
+                print(f"Pivoted long format data to {len(df_pivot)} rows and columns: {list(df_pivot.columns)}")
+            
+            # Ensure timestamp is datetime
+            if 'timestamp' in self.data.columns:
+                self.data['timestamp'] = pd.to_datetime(self.data['timestamp'])
+                self.data = self.data.sort_values('timestamp').reset_index(drop=True)
+            
+            # Fill NaN values with 0
+            self.data = self.data.fillna(0)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            return False
+    
+    def identify_columns(self, pv_column: Optional[str] = None, consumption_column: Optional[str] = None):
+        """Identify or set the PV generation and consumption columns"""
+        if self.data is None:
+            raise ValueError("Data not loaded. Run load_data() first.")
+        
+        columns = [col for col in self.data.columns if col != 'timestamp']
+        
+        print(f"Available columns: {columns}")
+        
+        if pv_column is None:
+            # Auto-detect PV column
+            pv_candidates = [col for col in columns if any(keyword in col.lower() 
+                           for keyword in ['pv', 'solar', 'generation', 'gen'])]
+            if pv_candidates:
+                pv_column = pv_candidates[0]
+                print(f"Auto-detected PV column: {pv_column}")
+            else:
+                print("Could not auto-detect PV column. Please specify manually.")
+                return False
+        
+        if consumption_column is None:
+            # Auto-detect consumption column
+            consumption_candidates = [col for col in columns if any(keyword in col.lower() 
+                                    for keyword in ['consum', 'load', 'demand', 'use'])]
+            if consumption_candidates:
+                consumption_column = consumption_candidates[0]
+                print(f"Auto-detected consumption column: {consumption_column}")
+            else:
+                print("Could not auto-detect consumption column. Please specify manually.")
+                return False
+        
+        self.pv_column = pv_column
+        self.consumption_column = consumption_column
+        
+        # Verify columns exist
+        if pv_column not in self.data.columns:
+            print(f"PV column '{pv_column}' not found in data")
+            return False
+        if consumption_column not in self.data.columns:
+            print(f"Consumption column '{consumption_column}' not found in data")
+            return False
+            
+        return True
+    
+    def simulate_provider(self, provider_name: str) -> pd.DataFrame:
+        """Simulate costs for a single provider"""
+        if provider_name not in self.providers:
+            raise ValueError(f"Provider '{provider_name}' not found")
+        
+        if not hasattr(self, 'pv_column') or not hasattr(self, 'consumption_column'):
+            raise ValueError("PV and consumption columns not identified. Run identify_columns() first.")
+        
+        if self.data is None:
+            raise ValueError("Data not loaded. Run load_data() first.")
+        
+        provider = self.providers[provider_name]
+        results = []
+        
+        for idx, row in self.data.iterrows():
+            pv_power = row[self.pv_column]
+            consumed_power = row[self.consumption_column]
+            net_power = pv_power - consumed_power  # Positive = excess, Negative = deficit
+            
+            timestamp = pd.Timestamp(row['timestamp'])
+            buy_price, buyback_price, period_name = provider.get_pricing(timestamp)
+            
+            # Calculate grid transactions
+            grid_purchase = max(0.0, float(-net_power))  # Buy when consumption exceeds generation
+            grid_sale = max(0.0, float(net_power))       # Sell excess generation
+            
+            # Calculate costs for this timestep
+            energy_cost = grid_purchase * buy_price - grid_sale * buyback_price
+            
+            result = {
+                'timestamp': timestamp,
+                'pv_power': pv_power,
+                'consumed_power': consumed_power,
+                'net_power': net_power,
+                'grid_purchase': grid_purchase,
+                'grid_sale': grid_sale,
+                'buy_price': buy_price,
+                'buyback_price': buyback_price,
+                'period_name': period_name,
+                'energy_cost': energy_cost
+            }
+            results.append(result)
+        
+        results_df = pd.DataFrame(results)
+        results_df['date'] = results_df['timestamp'].dt.date
+        
+        # Add daily charges
+        daily_charges = results_df.groupby('date').first().reset_index()
+        daily_charges['daily_charge'] = daily_charges['timestamp'].apply(provider.get_daily_charge)
+        
+        # Merge back daily charges
+        results_df = results_df.merge(
+            daily_charges[['date', 'daily_charge']], 
+            on='date', 
+            how='left'
+        )
+        
+        # Calculate total cost including daily charges (distribute across timesteps in day)
+        timesteps_per_day = results_df.groupby('date').size()
+        results_df = results_df.merge(
+            timesteps_per_day.rename('timesteps_per_day'), 
+            left_on='date', 
+            right_index=True
+        )
+        results_df['daily_charge_portion'] = results_df['daily_charge'] / results_df['timesteps_per_day']
+        results_df['total_cost'] = results_df['energy_cost'] + results_df['daily_charge_portion']
+        
+        return results_df
+    
+    def run_comparison(self) -> Dict[str, pd.DataFrame]:
+        """Run simulation for all providers"""
+        if not self.providers:
+            raise ValueError("No providers added to comparison")
+        
+        print("Running provider comparison...")
+        
+        for provider_name in self.providers:
+            print(f"Simulating {provider_name}...")
+            self.results[provider_name] = self.simulate_provider(provider_name)
+        
+        return self.results
+    
+    def calculate_summary_stats(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
+        """Calculate summary statistics for the comparison period"""
+        if not self.results:
+            raise ValueError("Run simulation first")
+        
+        summaries = []
+        
+        for provider_name, results_df in self.results.items():
+            provider = self.providers[provider_name]
+            
+            # Filter by date range if specified
+            if start_date or end_date:
+                filtered_df = results_df.copy()
+                if start_date:
+                    filtered_df = filtered_df[filtered_df['timestamp'] >= start_date]
+                if end_date:
+                    filtered_df = filtered_df[filtered_df['timestamp'] <= end_date]
+            else:
+                filtered_df = results_df
+            
+            if len(filtered_df) == 0:
+                continue
+            
+            # Calculate statistics
+            total_days = len(filtered_df['date'].unique())
+            total_energy_cost = filtered_df['energy_cost'].sum()
+            total_daily_charges = filtered_df['daily_charge_portion'].sum()
+            total_cost = filtered_df['total_cost'].sum()
+            
+            total_consumption = filtered_df['consumed_power'].sum()
+            total_generation = filtered_df['pv_power'].sum()
+            total_grid_purchase = filtered_df['grid_purchase'].sum()
+            total_grid_sale = filtered_df['grid_sale'].sum()
+            
+            # Calculate purchases by time period
+            period_purchases = {}
+            period_sales = {}
+            if provider.time_periods:
+                for period in provider.time_periods:
+                    period_mask = filtered_df['period_name'] == period.name
+                    period_purchases[f'{period.name}_purchases_kwh'] = filtered_df[period_mask]['grid_purchase'].sum()
+                    period_sales[f'{period.name}_sales_kwh'] = filtered_df[period_mask]['grid_sale'].sum()
+            
+            # For backward compatibility, still calculate peak/offpeak if available
+            peak_purchases = period_purchases.get('peak_purchases_kwh', 0)
+            offpeak_purchases = period_purchases.get('offpeak_purchases_kwh', 0)
+            night_purchases = period_purchases.get('night_purchases_kwh', 0)
+            
+            # Calculate averages
+            avg_daily_cost = total_cost / total_days if total_days > 0 else 0
+            avg_cost_per_kwh = total_cost / total_consumption if total_consumption > 0 else 0
+            
+            summary = {
+                'provider': provider_name,
+                'period_days': total_days,
+                'total_cost': total_cost,
+                'total_energy_cost': total_energy_cost,
+                'total_daily_charges': total_daily_charges,
+                'avg_daily_cost': avg_daily_cost,
+                'avg_cost_per_kwh_consumed': avg_cost_per_kwh,
+                'total_consumption_kwh': total_consumption,
+                'total_generation_kwh': total_generation,
+                'total_grid_purchase_kwh': total_grid_purchase,
+                'total_grid_sale_kwh': total_grid_sale,
+                'peak_purchases_kwh': peak_purchases,
+                'offpeak_purchases_kwh': offpeak_purchases,
+                'night_purchases_kwh': night_purchases,
+                'daily_charge': provider.daily_charge
+            }
+            
+            # Add all period-specific purchases and sales
+            summary.update(period_purchases)
+            summary.update(period_sales)
+            
+            # Add pricing information for each period
+            if provider.time_periods:
+                for period in provider.time_periods:
+                    summary[f'{period.name}_buy_price'] = period.buy_price
+                    summary[f'{period.name}_buyback_price'] = period.buyback_price
+            summaries.append(summary)
+        
+        summary_df = pd.DataFrame(summaries).sort_values('total_cost')
+        return summary_df
+    
+    def plot_comparison(self, save_path: Optional[str] = None):
+        """Create visualizations comparing providers"""
+        if not self.results:
+            raise ValueError("Run simulation first")
+        
+        # Calculate summary for plotting
+        summary_df = self.calculate_summary_stats()
+        
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Plot 1: Total cost comparison
+        ax1 = axes[0, 0]
+        bars = ax1.bar(summary_df['provider'], summary_df['total_cost'], 
+                      color=sns.color_palette("viridis", len(summary_df)))
+        ax1.set_title('Total Cost Comparison')
+        ax1.set_ylabel('Total Cost ($)')
+        ax1.tick_params(axis='x', rotation=45)
+        
+        # Add value labels on bars
+        for bar in bars:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                    f'${height:.2f}',
+                    ha='center', va='bottom')
+        
+        # Plot 2: Daily cost breakdown
+        ax2 = axes[0, 1]
+        width = 0.35
+        x = np.arange(len(summary_df))
+        
+        bars1 = ax2.bar(x - width/2, summary_df['total_energy_cost'] / summary_df['period_days'], 
+                       width, label='Daily Energy Cost', alpha=0.8)
+        bars2 = ax2.bar(x + width/2, summary_df['total_daily_charges'] / summary_df['period_days'], 
+                       width, label='Daily Fixed Charges', alpha=0.8)
+        
+        ax2.set_title('Daily Cost Breakdown')
+        ax2.set_ylabel('Daily Cost ($)')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(summary_df['provider'], rotation=45)
+        ax2.legend()
+        
+        # Plot 3: Cost per kWh consumed
+        ax3 = axes[1, 0]
+        bars = ax3.bar(summary_df['provider'], summary_df['avg_cost_per_kwh_consumed'], 
+                      color=sns.color_palette("plasma", len(summary_df)))
+        ax3.set_title('Average Cost per kWh Consumed')
+        ax3.set_ylabel('Cost ($/kWh)')
+        ax3.tick_params(axis='x', rotation=45)
+        
+        for bar in bars:
+            height = bar.get_height()
+            ax3.text(bar.get_x() + bar.get_width()/2., height,
+                    f'${height:.3f}',
+                    ha='center', va='bottom')
+        
+        # Plot 4: Peak vs Off-peak usage
+        ax4 = axes[1, 1]
+        x = np.arange(len(summary_df))
+        
+        bars1 = ax4.bar(x - width/2, summary_df['peak_purchases_kwh'], 
+                       width, label='Peak Purchases', alpha=0.8, color='red')
+        bars2 = ax4.bar(x + width/2, summary_df['offpeak_purchases_kwh'], 
+                       width, label='Off-Peak Purchases', alpha=0.8, color='blue')
+        
+        ax4.set_title('Grid Purchases: Peak vs Off-Peak')
+        ax4.set_ylabel('Energy (kWh)')
+        ax4.set_xticks(x)
+        ax4.set_xticklabels(summary_df['provider'], rotation=45)
+        ax4.legend()
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Comparison plot saved to {save_path}")
+        
+        plt.show()
+    
+    def export_results(self, output_path: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """Export detailed results and summary to Excel"""
+        if not self.results:
+            raise ValueError("Run simulation first")
+        
+        # Calculate summary
+        summary_df = self.calculate_summary_stats(start_date, end_date)
+        
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # Write summary sheet
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            # Write detailed results for each provider
+            for provider_name, results_df in self.results.items():
+                # Filter by date range if specified
+                if start_date or end_date:
+                    filtered_df = results_df.copy()
+                    if start_date:
+                        filtered_df = filtered_df[filtered_df['timestamp'] >= start_date]
+                    if end_date:
+                        filtered_df = filtered_df[filtered_df['timestamp'] <= end_date]
+                else:
+                    filtered_df = results_df
+                
+                # Write to sheet (truncate name if too long for Excel)
+                sheet_name = provider_name[:31] if len(provider_name) > 31 else provider_name
+                filtered_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        print(f"Results exported to {output_path}")
+
+def create_sample_providers():
+    """Create sample energy providers for demonstration"""
+    providers = [
+        EnergyProvider(
+            name="PowerCorp Standard",
+            peak_buy_price=0.28,
+            offpeak_buy_price=0.12,
+            solar_buyback_price=0.08,
+            daily_charge=1.20
+        ),
+        EnergyProvider(
+            name="GreenEnergy Plus", 
+            peak_buy_price=0.32,
+            offpeak_buy_price=0.08,
+            solar_buyback_price=0.12,
+            daily_charge=0.80
+        ),
+        EnergyProvider(
+            name="EcoUtility Premium",
+            peak_buy_price=0.26,
+            offpeak_buy_price=0.15,
+            solar_buyback_price=0.10,
+            daily_charge=1.50
+        ),
+        EnergyProvider(
+            name="SolarFriend Co",
+            peak_buy_price=0.30,
+            offpeak_buy_price=0.10,
+            solar_buyback_price=0.15,
+            daily_charge=0.95
+        ),
+        EnergyProvider(
+            name="FlexiRate 3-Tier",
+            peak_buy_price=0.35,
+            offpeak_buy_price=0.18,
+            night_buy_price=0.12,
+            peak_buyback_price=0.10,
+            offpeak_buyback_price=0.08,
+            night_buyback_price=0.05,
+            daily_charge=1.50
+        )
+    ]
+    return providers
+
+def main():
+    parser = argparse.ArgumentParser(description='Energy Provider Comparison Simulation')
+    parser.add_argument('csv_file', help='Path to CSV file containing historical energy data')
+    parser.add_argument('--providers-config', type=str, help='JSON file with provider configurations')
+    parser.add_argument('--pv-column', type=str, help='Name of PV generation column')
+    parser.add_argument('--consumption-column', type=str, help='Name of consumption column')
+    parser.add_argument('--start-date', type=str, help='Start date for analysis (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, help='End date for analysis (YYYY-MM-DD)')
+    parser.add_argument('--plot', action='store_true', help='Show comparison plots')
+    parser.add_argument('--save-plot', type=str, help='Save plot to file')
+    parser.add_argument('--export', type=str, help='Export results to Excel file')
+    
+    args = parser.parse_args()
+    
+    # Create comparison instance
+    comparison = EnergyProviderComparison()
+    
+    # Load providers
+    if args.providers_config:
+        if not comparison.add_providers_from_config(args.providers_config):
+            return
+    else:
+        # Use sample providers
+        print("No provider config specified, using sample providers...")
+        for provider in create_sample_providers():
+            comparison.add_provider(provider)
+    
+    # Load data
+    if not comparison.load_data(args.csv_file):
+        return
+    
+    # Identify columns
+    if not comparison.identify_columns(args.pv_column, args.consumption_column):
+        return
+    
+    # Run comparison
+    comparison.run_comparison()
+    
+    # Calculate and display summary
+    summary_df = comparison.calculate_summary_stats(args.start_date, args.end_date)
+    
+    print("\n" + "="*80)
+    print("ENERGY PROVIDER COMPARISON RESULTS")
+    print("="*80)
+    
+    if args.start_date or args.end_date:
+        period_str = f"Period: {args.start_date or 'start'} to {args.end_date or 'end'}"
+        print(period_str)
+        print("-" * len(period_str))
+    
+    # Display summary table
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.max_colwidth', None)
+    
+    display_cols = ['provider', 'total_cost', 'avg_daily_cost', 'avg_cost_per_kwh_consumed', 
+                   'total_consumption_kwh', 'total_generation_kwh', 'daily_charge']
+    
+    print("\nSUMMARY (sorted by total cost):")
+    print(summary_df[display_cols].round(3).to_string(index=False))
+    
+    # Show savings vs most expensive
+    if len(summary_df) > 1:
+        most_expensive = summary_df['total_cost'].max()
+        summary_df['savings_vs_most_expensive'] = most_expensive - summary_df['total_cost']
+        summary_df['savings_percent'] = (summary_df['savings_vs_most_expensive'] / most_expensive) * 100
+        
+        print(f"\nPOTENTIAL SAVINGS vs most expensive ({summary_df.iloc[-1]['provider']}):")
+        savings_cols = ['provider', 'total_cost', 'savings_vs_most_expensive', 'savings_percent']
+        print(summary_df[savings_cols].round(2).to_string(index=False))
+    
+    # Export results if requested
+    if args.export:
+        comparison.export_results(args.export, args.start_date, args.end_date)
+    
+    # Show plots if requested
+    if args.plot or args.save_plot:
+        comparison.plot_comparison(args.save_plot)
+
+if __name__ == "__main__":
+    main()
