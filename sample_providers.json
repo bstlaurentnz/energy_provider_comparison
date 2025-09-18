@@ -12,13 +12,13 @@
     },
     {
       "name": "Ecotricity",
-      "peak_buy_price": 0.317,
-      "offpeak_buy_price": 0.227,
-      "night_buy_price": 0.205,
+      "peak_buy_price": 0.2770,
+      "offpeak_buy_price": 0.187,
+      "night_buy_price": 0.183,
       "peak_buyback_price": 0.21,
       "offpeak_buyback_price": 0.16,
       "night_buyback_price": 0.16,
-      "daily_charge": 1.40
+      "daily_charge": 2.27
     },
     {
       "name": "Meridian Solar",
@@ -29,10 +29,10 @@
     },
     {
       "name": "Meridian EV",
-      "peak_buy_price": 0.26,
-      "offpeak_buy_price": 0.09,
+      "peak_buy_price": 0.2713,
+      "offpeak_buy_price": 0.0974,
       "solar_buyback_price": 0.12,
-      "daily_charge": 2.20
+      "daily_charge": 1.83
     }
   ]
 }
