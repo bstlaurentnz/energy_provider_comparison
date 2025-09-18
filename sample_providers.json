@@ -1,42 +1,38 @@
 {
   "providers": [
     {
+      "name": "OctopusPeaker",
+      "peak_buy_price": 0.312,
+      "offpeak_buy_price": 0.243,
+      "night_buy_price": 0.156,
+      "peak_buyback_price": 0.40,
+      "offpeak_buyback_price": 0.10,
+      "night_buyback_price": 0.05,
+      "daily_charge": 2.872
+    },
+    {
+      "name": "Ecotricity",
+      "peak_buy_price": 0.317,
+      "offpeak_buy_price": 0.227,
+      "night_buy_price": 0.205,
+      "peak_buyback_price": 0.21,
+      "offpeak_buyback_price": 0.16,
+      "night_buyback_price": 0.16,
+      "daily_charge": 1.40
+    },
+    {
+      "name": "Meridian Solar",
+      "peak_buy_price": 0.242,
+      "offpeak_buy_price": 0.197,
+      "solar_buyback_price": 0.17,
+      "daily_charge": 2.60
+    },
+    {
       "name": "Meridian EV",
       "peak_buy_price": 0.26,
       "offpeak_buy_price": 0.09,
       "solar_buyback_price": 0.12,
-      "daily_charge": 2.20,
-      "peak_start_hour": 7,
-      "peak_end_hour": 21,
-      "peak_days": [0, 1, 2, 3, 4, 5, 6]
-    },
-    {
-      "name": "Meridian higher buyback",
-      "peak_buy_price": 0.40,
-      "offpeak_buy_price": 0.16,
-      "solar_buyback_price": 0.17,
-      "daily_charge": 0.80,
-      "peak_start_hour": 7,
-      "peak_end_hour": 21,
-      "peak_days": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-      ]
-    },
-    {
-      "name": "24/7 Flat Rate",
-      "peak_buy_price": 0.22,
-      "offpeak_buy_price": 0.22,
-      "solar_buyback_price": 0.09,
-      "daily_charge": 1.00,
-      "peak_start_hour": 0,
-      "peak_end_hour": 0,
-      "peak_days": []
+      "daily_charge": 2.20
     }
   ]
 }
