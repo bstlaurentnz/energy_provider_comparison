@@ -17,10 +17,16 @@ The project uses a multi-stage data processing pipeline:
 
 ## Key Components
 
-### Data Processing Scripts (PowerShell)
+### Data Processing Scripts
+**PowerShell (Legacy):**
 - `AggregateData.ps1`: Aggregates sensor data into consistent time intervals (default 1-minute)
 - `PivotSensorData.ps1`: Converts long-format data to pivoted format suitable for simulation
 - `csv2json.ps1`: Utility to convert CSV to JSON format
+
+**Python (Recommended):**
+- `aggregate_data.py`: Python equivalent of AggregateData.ps1 with improved error handling
+- `pivot_sensor_data.py`: Python equivalent of PivotSensorData.ps1 with enhanced functionality
+- `process_sensor_data.py`: Unified script that can run aggregate, pivot, or complete pipeline
 
 ### Core Simulation (`solar_simulation.py`)
 - `SolarBatterySimulator` class: Main simulation engine
@@ -37,6 +43,24 @@ The project uses a multi-stage data processing pipeline:
 ## Common Commands
 
 ### Data Processing Workflow
+
+**Python (Recommended):**
+```bash
+# Complete pipeline in one command
+python process_sensor_data.py pipeline "history.csv" --output "processed_data.csv"
+
+# Or run steps individually:
+# 1. Aggregate raw sensor data to 1-minute intervals
+python aggregate_data.py "history.csv" --method average
+
+# 2. Pivot aggregated data to simulation format
+python pivot_sensor_data.py "history_1min.csv"
+
+# 3. Run simulation
+python solar_simulation.py "history_1min_pivoted.csv" --plot
+```
+
+**PowerShell (Legacy):**
 ```powershell
 # 1. Aggregate raw sensor data to 1-minute intervals
 .\AggregateData.ps1 -InputPath "history.csv" -AggregationMethod "Average"
