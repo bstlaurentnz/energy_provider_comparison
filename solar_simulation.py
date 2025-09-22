@@ -12,19 +12,19 @@ from datetime import datetime
 import seaborn as sns
 
 class SolarBatterySimulator:
-    def __init__(self, 
-                 battery_capacity=10.0,      # kWh
+    def __init__(self,
+                 battery_capacity=4.0,      # kWh
                  battery_efficiency=0.95,    # Round-trip efficiency (95%)
                  max_charge_rate=5.0,        # kW
                  max_discharge_rate=5.0,     # kW
-                 grid_buy_price_peak=0.26,   # $/kWh during peak hours (7am-9pm)
-                 grid_buy_price_offpeak=0.09, # $/kWh during off-peak hours
+                 grid_buy_price_peak=0.2885,   # $/kWh during peak hours (7am-9pm)
+                 grid_buy_price_offpeak=0.1147, # $/kWh during off-peak hours
                  peak_start_hour=7,          # Peak pricing starts at 7am
                  peak_end_hour=21,           # Peak pricing ends at 9pm (21:00)
-                 grid_sell_price=0.08,       # $/kWh (feed-in tariff)
-                 battery_cost=8000,          # $ total system cost
+                 grid_sell_price=0.12,       # $/kWh (feed-in tariff)
+                 battery_cost=4500,          # $ total system cost
                  battery_life_years=10):
-        
+
         self.battery_capacity = battery_capacity
         self.battery_efficiency = battery_efficiency
         self.max_charge_rate = max_charge_rate
@@ -36,13 +36,19 @@ class SolarBatterySimulator:
         self.grid_sell_price = grid_sell_price
         self.battery_cost = battery_cost
         self.battery_life_years = battery_life_years
+
+        # Time span tracking (set during data loading)
+        self.data_start_date = None
+        self.data_end_date = None
+        self.total_days = None
+        self.interval_minutes = None
         
     def load_data(self, csv_path):
         """Load and prepare data from CSV file"""
         try:
             # Try to auto-detect the CSV structure
             df = pd.read_csv(csv_path)
-            
+
             # Check if data is in pivoted format (timestamp, entity columns)
             if 'timestamp' in df.columns:
                 self.data = df.copy()
@@ -55,22 +61,38 @@ class SolarBatterySimulator:
                     values='state',
                     aggfunc='mean'
                 ).reset_index()
-                
+
                 # Rename index column to timestamp
                 df_pivot.rename(columns={df_pivot.columns[0]: 'timestamp'}, inplace=True)
                 self.data = df_pivot
                 print(f"Pivoted long format data to {len(df_pivot)} rows and columns: {list(df_pivot.columns)}")
-            
+
             # Ensure timestamp is datetime
             if 'timestamp' in self.data.columns:
                 self.data['timestamp'] = pd.to_datetime(self.data['timestamp'])
                 self.data = self.data.sort_values('timestamp').reset_index(drop=True)
-            
+
             # Fill NaN values with 0
             self.data = self.data.fillna(0)
-            
+
+            # Calculate time span information
+            if len(self.data) > 0 and 'timestamp' in self.data.columns:
+                self.data_start_date = self.data['timestamp'].min()
+                self.data_end_date = self.data['timestamp'].max()
+                self.total_days = (self.data_end_date - self.data_start_date).days + 1
+
+                # Detect interval from timestamp differences
+                if len(self.data) > 1:
+                    time_diff = self.data['timestamp'].iloc[1] - self.data['timestamp'].iloc[0]
+                    self.interval_minutes = time_diff.total_seconds() / 60.0
+                else:
+                    self.interval_minutes = 1.0  # Default to 1 minute
+
+                print(f"Data time span: {self.data_start_date} to {self.data_end_date} ({self.total_days} days)")
+                print(f"Detected interval: {self.interval_minutes} minutes")
+
             return True
-            
+
         except Exception as e:
             print(f"Error loading data: {e}")
             return False
@@ -190,8 +212,11 @@ class SolarBatterySimulator:
                 if remaining_deficit > 0:
                     grid_purchase = remaining_deficit
             
+            # Convert power to energy based on interval duration
+            energy_multiplier = self.interval_minutes / 60.0 if hasattr(self, 'interval_minutes') else 1.0 / 60.0
+
             # Calculate costs for this timestep using time-of-use pricing
-            timestep_cost = grid_purchase * current_buy_price - grid_sale * self.grid_sell_price
+            timestep_cost = (grid_purchase * energy_multiplier) * current_buy_price - (grid_sale * energy_multiplier) * self.grid_sell_price
             
             # Store results
             result = {
@@ -229,7 +254,10 @@ class SolarBatterySimulator:
             # Without battery: buy all deficit, sell all excess
             grid_purchase = max(0, -net_power)
             grid_sale = max(0, net_power)
-            cost = grid_purchase * current_buy_price - grid_sale * self.grid_sell_price
+
+            # Convert power to energy based on interval duration
+            energy_multiplier = self.interval_minutes / 60.0 if hasattr(self, 'interval_minutes') else 1.0 / 60.0
+            cost = (grid_purchase * energy_multiplier) * current_buy_price - (grid_sale * energy_multiplier) * self.grid_sell_price
             
             result = {
                 'timestamp': row['timestamp'] if 'timestamp' in row else idx,
@@ -250,30 +278,41 @@ class SolarBatterySimulator:
         """Calculate the economic impact of the battery system"""
         if not hasattr(self, 'results_df') or not hasattr(self, 'results_no_battery_df'):
             raise ValueError("Run simulations first")
-        
-        # Daily totals
+
+        # Period totals
         total_cost_with_battery = self.results_df['cost'].sum()
         total_cost_without_battery = self.results_no_battery_df['cost'].sum()
-        daily_savings = total_cost_without_battery - total_cost_with_battery
-        
-        # Annual projections (assuming this is representative data)
-        annual_savings = daily_savings * 365
+        period_savings = total_cost_without_battery - total_cost_with_battery
+
+        # Calculate daily average and annual projections
+        if hasattr(self, 'total_days') and self.total_days and self.total_days > 0:
+            daily_savings = period_savings / self.total_days
+            annual_savings = daily_savings * 365
+        else:
+            # Fallback: assume data represents one day
+            daily_savings = period_savings
+            annual_savings = period_savings * 365
+
         payback_period = self.battery_cost / annual_savings if annual_savings > 0 else float('inf')
         
-        # Battery utilization
-        total_energy_charged = self.results_df['battery_charge'].sum()
-        total_energy_discharged = self.results_df['battery_discharge'].sum()
+        # Battery utilization (convert to energy if needed)
+        energy_multiplier = self.interval_minutes / 60.0 if hasattr(self, 'interval_minutes') else 1.0 / 60.0
+        total_energy_charged = (self.results_df['battery_charge'] * energy_multiplier).sum()
+        total_energy_discharged = (self.results_df['battery_discharge'] * energy_multiplier).sum()
         round_trip_efficiency = total_energy_discharged / total_energy_charged if total_energy_charged > 0 else 0
-        
-        # Peak vs off-peak analysis
-        peak_purchases_with = self.results_df[self.results_df['grid_buy_price'] == self.grid_buy_price_peak]['grid_purchase'].sum()
-        offpeak_purchases_with = self.results_df[self.results_df['grid_buy_price'] == self.grid_buy_price_offpeak]['grid_purchase'].sum()
-        peak_purchases_without = self.results_no_battery_df[self.results_no_battery_df['grid_buy_price'] == self.grid_buy_price_peak]['grid_purchase'].sum()
-        offpeak_purchases_without = self.results_no_battery_df[self.results_no_battery_df['grid_buy_price'] == self.grid_buy_price_offpeak]['grid_purchase'].sum()
+
+        # Peak vs off-peak analysis (convert to energy)
+        peak_purchases_with = (self.results_df[self.results_df['grid_buy_price'] == self.grid_buy_price_peak]['grid_purchase'] * energy_multiplier).sum()
+        offpeak_purchases_with = (self.results_df[self.results_df['grid_buy_price'] == self.grid_buy_price_offpeak]['grid_purchase'] * energy_multiplier).sum()
+        peak_purchases_without = (self.results_no_battery_df[self.results_no_battery_df['grid_buy_price'] == self.grid_buy_price_peak]['grid_purchase'] * energy_multiplier).sum()
+        offpeak_purchases_without = (self.results_no_battery_df[self.results_no_battery_df['grid_buy_price'] == self.grid_buy_price_offpeak]['grid_purchase'] * energy_multiplier).sum()
         
         economics = {
-            'daily_cost_with_battery': total_cost_with_battery,
-            'daily_cost_without_battery': total_cost_without_battery,
+            'period_cost_with_battery': total_cost_with_battery,
+            'period_cost_without_battery': total_cost_without_battery,
+            'period_savings': period_savings,
+            'daily_cost_with_battery': total_cost_with_battery / (self.total_days if hasattr(self, 'total_days') and self.total_days else 1),
+            'daily_cost_without_battery': total_cost_without_battery / (self.total_days if hasattr(self, 'total_days') and self.total_days else 1),
             'daily_savings': daily_savings,
             'annual_savings': annual_savings,
             'battery_cost': self.battery_cost,
@@ -287,7 +326,11 @@ class SolarBatterySimulator:
             'peak_purchases_without_battery': peak_purchases_without,
             'offpeak_purchases_without_battery': offpeak_purchases_without,
             'peak_purchase_reduction': peak_purchases_without - peak_purchases_with,
-            'offpeak_purchase_increase': offpeak_purchases_with - offpeak_purchases_without
+            'offpeak_purchase_increase': offpeak_purchases_with - offpeak_purchases_without,
+            'data_start_date': self.data_start_date if hasattr(self, 'data_start_date') else None,
+            'data_end_date': self.data_end_date if hasattr(self, 'data_end_date') else None,
+            'total_days': self.total_days if hasattr(self, 'total_days') else None,
+            'interval_minutes': self.interval_minutes if hasattr(self, 'interval_minutes') else None
         }
         
         return economics
@@ -391,16 +434,19 @@ class SolarBatterySimulator:
 def main():
     parser = argparse.ArgumentParser(description='Solar Battery System Simulation')
     parser.add_argument('csv_file', help='Path to CSV file containing solar data')
-    parser.add_argument('--battery-capacity', type=float, default=10.0, help='Battery capacity in kWh (default: 10)')
-    parser.add_argument('--battery-efficiency', type=float, default=0.95, help='Round-trip efficiency (default: 0.95)')
-    parser.add_argument('--charge-rate', type=float, default=5.0, help='Max charge rate in kW (default: 5)')
-    parser.add_argument('--discharge-rate', type=float, default=5.0, help='Max discharge rate in kW (default: 5)')
-    parser.add_argument('--buy-price-peak', type=float, default=0.26, help='Grid buy price during peak hours $/kWh (default: 0.26)')
-    parser.add_argument('--buy-price-offpeak', type=float, default=0.09, help='Grid buy price during off-peak hours $/kWh (default: 0.09)')
-    parser.add_argument('--peak-start', type=int, default=7, help='Peak pricing start hour (default: 7)')
-    parser.add_argument('--peak-end', type=int, default=21, help='Peak pricing end hour (default: 21)')
-    parser.add_argument('--sell-price', type=float, default=0.08, help='Grid sell price $/kWh (default: 0.08)')
-    parser.add_argument('--battery-cost', type=float, default=8000, help='Battery system cost $ (default: 8000)')
+    # Get class defaults for help text
+    sim_defaults = SolarBatterySimulator()
+
+    parser.add_argument('--battery-capacity', type=float, help=f'Battery capacity in kWh (default: {sim_defaults.battery_capacity})')
+    parser.add_argument('--battery-efficiency', type=float, help=f'Round-trip efficiency (default: {sim_defaults.battery_efficiency})')
+    parser.add_argument('--charge-rate', type=float, help=f'Max charge rate in kW (default: {sim_defaults.max_charge_rate})')
+    parser.add_argument('--discharge-rate', type=float, help=f'Max discharge rate in kW (default: {sim_defaults.max_discharge_rate})')
+    parser.add_argument('--buy-price-peak', type=float, help=f'Grid buy price during peak hours $/kWh (default: {sim_defaults.grid_buy_price_peak})')
+    parser.add_argument('--buy-price-offpeak', type=float, help=f'Grid buy price during off-peak hours $/kWh (default: {sim_defaults.grid_buy_price_offpeak})')
+    parser.add_argument('--peak-start', type=int, help=f'Peak pricing start hour (default: {sim_defaults.peak_start_hour})')
+    parser.add_argument('--peak-end', type=int, help=f'Peak pricing end hour (default: {sim_defaults.peak_end_hour})')
+    parser.add_argument('--sell-price', type=float, help=f'Grid sell price $/kWh (default: {sim_defaults.grid_sell_price})')
+    parser.add_argument('--battery-cost', type=float, help=f'Battery system cost $ (default: {sim_defaults.battery_cost})')
     parser.add_argument('--pv-column', type=str, help='Name of PV generation column')
     parser.add_argument('--consumption-column', type=str, help='Name of consumption column')
     parser.add_argument('--plot', action='store_true', help='Show plots')
@@ -408,19 +454,30 @@ def main():
     
     args = parser.parse_args()
     
-    # Create simulator
-    simulator = SolarBatterySimulator(
-        battery_capacity=args.battery_capacity,
-        battery_efficiency=args.battery_efficiency,
-        max_charge_rate=args.charge_rate,
-        max_discharge_rate=args.discharge_rate,
-        grid_buy_price_peak=args.buy_price_peak,
-        grid_buy_price_offpeak=args.buy_price_offpeak,
-        peak_start_hour=args.peak_start,
-        peak_end_hour=args.peak_end,
-        grid_sell_price=args.sell_price,
-        battery_cost=args.battery_cost
-    )
+    # Create simulator with only non-None arguments
+    sim_args = {}
+    if args.battery_capacity is not None:
+        sim_args['battery_capacity'] = args.battery_capacity
+    if args.battery_efficiency is not None:
+        sim_args['battery_efficiency'] = args.battery_efficiency
+    if args.charge_rate is not None:
+        sim_args['max_charge_rate'] = args.charge_rate
+    if args.discharge_rate is not None:
+        sim_args['max_discharge_rate'] = args.discharge_rate
+    if args.buy_price_peak is not None:
+        sim_args['grid_buy_price_peak'] = args.buy_price_peak
+    if args.buy_price_offpeak is not None:
+        sim_args['grid_buy_price_offpeak'] = args.buy_price_offpeak
+    if args.peak_start is not None:
+        sim_args['peak_start_hour'] = args.peak_start
+    if args.peak_end is not None:
+        sim_args['peak_end_hour'] = args.peak_end
+    if args.sell_price is not None:
+        sim_args['grid_sell_price'] = args.sell_price
+    if args.battery_cost is not None:
+        sim_args['battery_cost'] = args.battery_cost
+
+    simulator = SolarBatterySimulator(**sim_args)
     
     # Load data
     if not simulator.load_data(args.csv_file):
@@ -444,12 +501,28 @@ def main():
     print("\n" + "="*50)
     print("SIMULATION RESULTS")
     print("="*50)
-    print(f"Battery Capacity: {args.battery_capacity:.1f} kWh")
-    print(f"Max Charge/Discharge Rate: {args.charge_rate:.1f} / {args.discharge_rate:.1f} kW")
-    print(f"Grid Buy Price (Peak): ${args.buy_price_peak:.3f} per kWh ({args.peak_start}:00-{args.peak_end}:00)")
-    print(f"Grid Buy Price (Off-Peak): ${args.buy_price_offpeak:.3f} per kWh")
-    print(f"Grid Sell Price: ${args.sell_price:.3f} per kWh")
+    print(f"Battery Capacity: {simulator.battery_capacity:.1f} kWh")
+    print(f"Max Charge/Discharge Rate: {simulator.max_charge_rate:.1f} / {simulator.max_discharge_rate:.1f} kW")
+    print(f"Grid Buy Price (Peak): ${simulator.grid_buy_price_peak:.3f} per kWh ({simulator.peak_start_hour}:00-{simulator.peak_end_hour}:00)")
+    print(f"Grid Buy Price (Off-Peak): ${simulator.grid_buy_price_offpeak:.3f} per kWh")
+    print(f"Grid Sell Price: ${simulator.grid_sell_price:.3f} per kWh")
     print()
+
+    # Data period information
+    if economics['data_start_date'] and economics['data_end_date']:
+        print("DATA PERIOD:")
+        print(f"  Start date: {economics['data_start_date'].strftime('%Y-%m-%d')}")
+        print(f"  End date: {economics['data_end_date'].strftime('%Y-%m-%d')}")
+        print(f"  Total days: {economics['total_days']}")
+        print(f"  Interval: {economics['interval_minutes']:.1f} minutes")
+        print()
+
+        print("PERIOD ECONOMICS:")
+        print(f"  Period cost without battery: ${economics['period_cost_without_battery']:.2f}")
+        print(f"  Period cost with battery:    ${economics['period_cost_with_battery']:.2f}")
+        print(f"  Period savings:              ${economics['period_savings']:.2f}")
+        print()
+
     print("DAILY ECONOMICS:")
     print(f"  Cost without battery: ${economics['daily_cost_without_battery']:.2f}")
     print(f"  Cost with battery:    ${economics['daily_cost_with_battery']:.2f}")

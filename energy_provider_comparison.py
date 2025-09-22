@@ -84,6 +84,10 @@ class EnergyProviderComparison:
         self.pv_column: Optional[str] = None
         self.consumption_column: Optional[str] = None
         self.results: Dict[str, pd.DataFrame] = {}
+        self.interval_minutes: Optional[float] = None
+        self.data_start_date: Optional[pd.Timestamp] = None
+        self.data_end_date: Optional[pd.Timestamp] = None
+        self.total_days: Optional[int] = None
         
     def add_provider(self, provider: EnergyProvider):
         """Add an energy provider to the comparison"""
@@ -147,7 +151,14 @@ class EnergyProviderComparison:
             if 'timestamp' in self.data.columns:
                 self.data['timestamp'] = pd.to_datetime(self.data['timestamp'])
                 self.data = self.data.sort_values('timestamp').reset_index(drop=True)
-            
+
+                # Calculate data time span
+                self.data_start_date = self.data['timestamp'].min()
+                self.data_end_date = self.data['timestamp'].max()
+                self.total_days = (self.data_end_date - self.data_start_date).days + 1
+
+                print(f"Data time span: {self.data_start_date.strftime('%Y-%m-%d')} to {self.data_end_date.strftime('%Y-%m-%d')} ({self.total_days} days)")
+
             # Fill NaN values with 0
             self.data = self.data.fillna(0)
             
@@ -214,29 +225,53 @@ class EnergyProviderComparison:
         
         provider = self.providers[provider_name]
         results = []
-        
+
+        # Detect and store the time interval from the data
+        if self.interval_minutes is None:
+            if len(self.data) >= 2:
+                time_diff = self.data['timestamp'].iloc[1] - self.data['timestamp'].iloc[0]
+                self.interval_minutes = time_diff.total_seconds() / 60.0
+            else:
+                self.interval_minutes = 1.0  # Default to 1-minute if only one row
+
+        interval_minutes = self.interval_minutes
+        print(f"Detected time interval: {interval_minutes} minutes")
+
         for idx, row in self.data.iterrows():
             pv_power = row[self.pv_column]
             consumed_power = row[self.consumption_column]
-            net_power = pv_power - consumed_power  # Positive = excess, Negative = deficit
+
+            # Convert power (kW) to energy (kWh) based on detected interval
+            # kWh = kW * (interval_minutes / 60)
+            pv_energy = pv_power * (interval_minutes / 60.0)  # kWh for this timestep
+            consumed_energy = consumed_power * (interval_minutes / 60.0)  # kWh for this timestep
+            net_energy = pv_energy - consumed_energy  # Positive = excess, Negative = deficit
             
             timestamp = pd.Timestamp(row['timestamp'])
             buy_price, buyback_price, period_name = provider.get_pricing(timestamp)
             
-            # Calculate grid transactions
-            grid_purchase = max(0.0, float(-net_power))  # Buy when consumption exceeds generation
-            grid_sale = max(0.0, float(net_power))       # Sell excess generation
+            # Calculate grid transactions in kWh
+            grid_purchase = max(0.0, float(-net_energy))  # Buy when consumption exceeds generation
+            grid_sale = max(0.0, float(net_energy))       # Sell excess generation
             
             # Calculate costs for this timestep
-            energy_cost = grid_purchase * buy_price - grid_sale * buyback_price
+            purchase_cost = grid_purchase * buy_price
+            sale_revenue = grid_sale * buyback_price
+
+            # Apply GST only to purchases, not to sales revenue
             if provider.gst_applicable:
-                energy_cost *= 1.15  # Apply 15% GST to energy costs
+                purchase_cost *= 1.15  # Apply 15% GST to energy purchases only
+
+            energy_cost = purchase_cost - sale_revenue
             
             result = {
                 'timestamp': timestamp,
+                'interval_minutes': interval_minutes,
                 'pv_power': pv_power,
                 'consumed_power': consumed_power,
-                'net_power': net_power,
+                'pv_energy': pv_energy,
+                'consumed_energy': consumed_energy,
+                'net_energy': net_energy,
                 'grid_purchase': grid_purchase,
                 'grid_sale': grid_sale,
                 'buy_price': buy_price,
@@ -249,26 +284,26 @@ class EnergyProviderComparison:
         results_df = pd.DataFrame(results)
         results_df['date'] = results_df['timestamp'].dt.date
         
-        # Add daily charges
-        daily_charges = results_df.groupby('date').first().reset_index()
-        daily_charges['daily_charge'] = daily_charges['timestamp'].apply(provider.get_daily_charge)
-        
-        # Merge back daily charges
+        # Calculate daily aggregations
+        daily_summary = results_df.groupby('date').agg({
+            'energy_cost': 'sum',
+            'timestamp': 'first'  # Get first timestamp for each day to calculate daily charge
+        }).reset_index()
+
+        # Add daily charges (once per day)
+        daily_summary['daily_charge'] = daily_summary['timestamp'].apply(provider.get_daily_charge)
+        daily_summary['total_daily_cost'] = daily_summary['energy_cost'] + daily_summary['daily_charge']
+
+        # Merge daily totals back to timestep data for detailed analysis
         results_df = results_df.merge(
-            daily_charges[['date', 'daily_charge']], 
-            on='date', 
+            daily_summary[['date', 'daily_charge', 'total_daily_cost']],
+            on='date',
             how='left'
         )
-        
-        # Calculate total cost including daily charges (distribute across timesteps in day)
-        timesteps_per_day = results_df.groupby('date').size()
-        results_df = results_df.merge(
-            timesteps_per_day.rename('timesteps_per_day'), 
-            left_on='date', 
-            right_index=True
-        )
-        results_df['daily_charge_portion'] = results_df['daily_charge'] / results_df['timesteps_per_day']
-        results_df['total_cost'] = results_df['energy_cost'] + results_df['daily_charge_portion']
+
+        # For timestep-level analysis, we'll keep energy_cost per timestep
+        # and show daily_charge and total_daily_cost at the daily level
+        results_df['total_cost'] = results_df['energy_cost']  # Timestep-level energy cost only
         
         return results_df
     
@@ -308,14 +343,20 @@ class EnergyProviderComparison:
             if len(filtered_df) == 0:
                 continue
             
-            # Calculate statistics
-            total_days = len(filtered_df['date'].unique())
-            total_energy_cost = filtered_df['energy_cost'].sum()
-            total_daily_charges = filtered_df['daily_charge_portion'].sum()
-            total_cost = filtered_df['total_cost'].sum()
+            # Calculate statistics properly by aggregating daily totals
+            daily_totals = filtered_df.groupby('date').agg({
+                'energy_cost': 'sum',
+                'daily_charge': 'first',  # Same for all timesteps in a day
+                'total_daily_cost': 'first'  # Same for all timesteps in a day
+            }).reset_index()
+
+            total_days = len(daily_totals)
+            total_energy_cost = daily_totals['energy_cost'].sum()
+            total_daily_charges = daily_totals['daily_charge'].sum()
+            total_cost = total_energy_cost + total_daily_charges
             
-            total_consumption = filtered_df['consumed_power'].sum()
-            total_generation = filtered_df['pv_power'].sum()
+            total_consumption = filtered_df['consumed_energy'].sum()
+            total_generation = filtered_df['pv_energy'].sum()
             total_grid_purchase = filtered_df['grid_purchase'].sum()
             total_grid_sale = filtered_df['grid_sale'].sum()
             
@@ -339,7 +380,11 @@ class EnergyProviderComparison:
             
             summary = {
                 'provider': provider_name,
-                'period_days': total_days,
+                'data_start_date': self.data_start_date.strftime('%Y-%m-%d') if self.data_start_date else None,
+                'data_end_date': self.data_end_date.strftime('%Y-%m-%d') if self.data_end_date else None,
+                'total_data_days': self.total_days,
+                'analysis_days': total_days,
+                'interval_minutes': self.interval_minutes,
                 'total_cost': total_cost,
                 'total_energy_cost': total_energy_cost,
                 'total_daily_charges': total_daily_charges,
@@ -352,7 +397,9 @@ class EnergyProviderComparison:
                 'peak_purchases_kwh': peak_purchases,
                 'offpeak_purchases_kwh': offpeak_purchases,
                 'night_purchases_kwh': night_purchases,
-                'daily_charge': provider.daily_charge
+                'daily_charge': provider.daily_charge,
+                'total_timesteps': len(filtered_df),
+                'timesteps_per_day': len(filtered_df) / total_days if total_days > 0 else 0
             }
             
             # Add all period-specific purchases and sales
@@ -399,9 +446,9 @@ class EnergyProviderComparison:
         width = 0.35
         x = np.arange(len(summary_df))
         
-        bars1 = ax2.bar(x - width/2, summary_df['total_energy_cost'] / summary_df['period_days'], 
+        bars1 = ax2.bar(x - width/2, summary_df['total_energy_cost'] / summary_df['analysis_days'],
                        width, label='Daily Energy Cost', alpha=0.8)
-        bars2 = ax2.bar(x + width/2, summary_df['total_daily_charges'] / summary_df['period_days'], 
+        bars2 = ax2.bar(x + width/2, summary_df['total_daily_charges'] / summary_df['analysis_days'],
                        width, label='Daily Fixed Charges', alpha=0.8)
         
         ax2.set_title('Daily Cost Breakdown')
@@ -593,9 +640,34 @@ def main():
     print("\n" + "="*80)
     print("ENERGY PROVIDER COMPARISON RESULTS")
     print("="*80)
-    
+
+    # Display data time span information
+    if comparison.data_start_date and comparison.data_end_date:
+        data_span_str = f"Data period: {comparison.data_start_date.strftime('%Y-%m-%d')} to {comparison.data_end_date.strftime('%Y-%m-%d')} ({comparison.total_days} days)"
+        print(data_span_str)
+        print("-" * len(data_span_str))
+
+    # Display interval information
+    if comparison.interval_minutes:
+        interval_str = f"Data interval: {comparison.interval_minutes} minutes"
+        if comparison.interval_minutes == 1.0:
+            interval_desc = "(1-minute intervals)"
+        elif comparison.interval_minutes == 5.0:
+            interval_desc = "(5-minute intervals)"
+        elif comparison.interval_minutes == 15.0:
+            interval_desc = "(15-minute intervals)"
+        elif comparison.interval_minutes == 30.0:
+            interval_desc = "(30-minute intervals)"
+        elif comparison.interval_minutes == 60.0:
+            interval_desc = "(1-hour intervals)"
+        else:
+            interval_desc = f"({comparison.interval_minutes:.1f}-minute intervals)"
+
+        print(f"{interval_str} {interval_desc}")
+        print("-" * len(interval_str + " " + interval_desc))
+
     if args.start_date or args.end_date:
-        period_str = f"Period: {args.start_date or 'start'} to {args.end_date or 'end'}"
+        period_str = f"Analysis period: {args.start_date or 'start'} to {args.end_date or 'end'}"
         print(period_str)
         print("-" * len(period_str))
     
@@ -604,7 +676,8 @@ def main():
     pd.set_option('display.width', None)
     pd.set_option('display.max_colwidth', None)
     
-    display_cols = ['provider', 'total_cost', 'avg_daily_cost', 'avg_cost_per_kwh_consumed', 
+    display_cols = ['provider', 'data_start_date', 'data_end_date', 'total_data_days', 'analysis_days',
+                   'total_cost', 'avg_daily_cost', 'avg_cost_per_kwh_consumed',
                    'total_consumption_kwh', 'total_generation_kwh', 'daily_charge']
     
     print("\nSUMMARY (sorted by total cost):")

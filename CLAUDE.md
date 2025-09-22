@@ -287,12 +287,12 @@ Energy providers require a structured JSON format with mandatory time period def
 
 ### GST Configuration
 
-The `gst_applicable` flag allows you to apply 15% GST (Goods and Services Tax) to all costs for a provider:
+The `gst_applicable` flag allows you to apply 15% GST (Goods and Services Tax) to costs for a provider:
 
-- When `gst_applicable: true`: All energy costs and daily charges are multiplied by 1.15
+- When `gst_applicable: true`: Energy purchase costs and daily charges are multiplied by 1.15
 - When `gst_applicable: false` or omitted: No GST is applied (default behavior)
-- GST is applied to both energy purchase costs and daily charges
-- Solar buyback prices are not affected by GST (revenue is not taxed)
+- GST is applied to energy purchases and daily charges only
+- Solar buyback revenue is not affected by GST (revenue is not taxed)
 
 Example with GST:
 ```json
@@ -303,7 +303,7 @@ Example with GST:
   "time_periods": [
     {
       "name": "peak",
-      "buy_price": 0.30,         // Will become $0.345/kWh with GST
+      "buy_price": 0.30,         // Purchases become $0.345/kWh with GST
       "buyback_price": 0.10,     // Remains $0.10/kWh (no GST on revenue)
       "time_ranges": [{"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}]
     }
