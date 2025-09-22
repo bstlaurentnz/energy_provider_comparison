@@ -143,42 +143,175 @@ The simulator accepts two input formats:
 
 ## Provider Configuration Format
 
-Energy providers support both 2-tier and 3-tier time-of-use pricing:
+Energy providers require a structured JSON format with mandatory time period definitions. Each provider must define their complete pricing structure with custom time ranges.
 
-### 3-Tier Pricing (Peak/Off-peak/Night)
+### Required JSON Structure
 ```json
 {
   "providers": [
     {
-      "name": "3-Tier Provider",
-      "peak_buy_price": 0.35,         // $/kWh peak hours (7-11am, 5-9pm weekdays)
-      "offpeak_buy_price": 0.18,      // $/kWh off-peak (11am-5pm, 9-11pm weekdays, 7am-11pm weekends)
-      "night_buy_price": 0.12,        // $/kWh night (11pm-7am every day)
-      "peak_buyback_price": 0.10,     // $/kWh solar buyback during peak
-      "offpeak_buyback_price": 0.08,  // $/kWh solar buyback during off-peak
-      "night_buyback_price": 0.05,    // $/kWh solar buyback during night
-      "daily_charge": 1.50             // $/day fixed daily charge
+      "name": "Provider Name",
+      "daily_charge": 1.50,           // $/day fixed daily charge (mandatory)
+      "gst_applicable": false,        // Apply 15% GST to all costs (optional, default: false)
+      "time_periods": [               // Array of pricing periods (mandatory)
+        {
+          "name": "peak",             // Period name (peak, offpeak, night, etc.)
+          "buy_price": 0.35,          // $/kWh electricity purchase price
+          "buyback_price": 0.10,      // $/kWh solar feed-in tariff
+          "time_ranges": [            // Array of time ranges for this period
+            {
+              "start_hour": 7,        // Hour to start (0-23)
+              "end_hour": 11,         // Hour to end (1-24, exclusive)
+              "days": [0, 1, 2, 3, 4] // Days of week (0=Mon, 6=Sun)
+            }
+          ]
+        }
+      ]
     }
   ]
 }
 ```
 
-### 2-Tier Pricing (Legacy format - still supported)
+### Example: 3-Tier Pricing Provider
 ```json
 {
   "providers": [
     {
-      "name": "2-Tier Provider",
-      "peak_buy_price": 0.28,         // $/kWh during peak hours (7am-9pm every day)
-      "offpeak_buy_price": 0.12,      // $/kWh during off-peak hours (9pm-7am every day)
-      "solar_buyback_price": 0.08,    // $/kWh single feed-in tariff
-      "daily_charge": 1.20             // $/day fixed daily charge
+      "name": "OctopusPeaker",
+      "daily_charge": 2.872,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.312,
+          "buyback_price": 0.40,
+          "time_ranges": [
+            {"start_hour": 7, "end_hour": 11, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 17, "end_hour": 21, "days": [0, 1, 2, 3, 4]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.243,
+          "buyback_price": 0.10,
+          "time_ranges": [
+            {"start_hour": 11, "end_hour": 17, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 21, "end_hour": 23, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 7, "end_hour": 23, "days": [5, 6]}
+          ]
+        },
+        {
+          "name": "night",
+          "buy_price": 0.156,
+          "buyback_price": 0.05,
+          "time_ranges": [
+            {"start_hour": 23, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+            {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        }
+      ]
     }
   ]
 }
 ```
 
-See `sample_providers.json` and `sample_3tier_providers.json` for examples.
+### Example: 2-Tier Pricing Provider
+```json
+{
+  "providers": [
+    {
+      "name": "Meridian Solar",
+      "daily_charge": 2.60,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.242,
+          "buyback_price": 0.17,
+          "time_ranges": [
+            {"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.197,
+          "buyback_price": 0.17,
+          "time_ranges": [
+            {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+            {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Example: Custom Business Hours Provider
+```json
+{
+  "providers": [
+    {
+      "name": "Custom Business Hours Provider",
+      "daily_charge": 1.50,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.35,
+          "buyback_price": 0.10,
+          "time_ranges": [
+            {"start_hour": 9, "end_hour": 17, "days": [0, 1, 2, 3, 4]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.15,
+          "buyback_price": 0.10,
+          "time_ranges": [
+            {"start_hour": 17, "end_hour": 24, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 0, "end_hour": 9, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 0, "end_hour": 24, "days": [5, 6]}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Key Features:**
+- **Fully Customizable**: Define any number of pricing periods with custom names
+- **Flexible Time Ranges**: Each period can have multiple time ranges
+- **Day-of-Week Specific**: Different schedules for weekdays vs weekends
+- **Multiple Time Blocks**: Peak hours can be split (e.g., morning and evening peaks)
+- **Per-Provider Customization**: Each provider can have completely different time structures
+- **GST Support**: Optional 15% GST can be applied to all costs per provider
+
+### GST Configuration
+
+The `gst_applicable` flag allows you to apply 15% GST (Goods and Services Tax) to all costs for a provider:
+
+- When `gst_applicable: true`: All energy costs and daily charges are multiplied by 1.15
+- When `gst_applicable: false` or omitted: No GST is applied (default behavior)
+- GST is applied to both energy purchase costs and daily charges
+- Solar buyback prices are not affected by GST (revenue is not taxed)
+
+Example with GST:
+```json
+{
+  "name": "GST Provider",
+  "daily_charge": 1.00,          // Will become $1.15/day with GST
+  "gst_applicable": true,
+  "time_periods": [
+    {
+      "name": "peak",
+      "buy_price": 0.30,         // Will become $0.345/kWh with GST
+      "buyback_price": 0.10,     // Remains $0.10/kWh (no GST on revenue)
+      "time_ranges": [{"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}]
+    }
+  ]
+}
+```
+
+See `sample_providers.json` for complete examples of all provider configuration formats.
 
 ## Testing and Validation
 

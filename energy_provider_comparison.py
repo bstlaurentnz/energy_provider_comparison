@@ -28,81 +28,8 @@ class EnergyProvider:
     """Represents an energy provider with their pricing structure"""
     name: str
     daily_charge: float             # $/day fixed daily charge
-    time_periods: Optional[List[TimeOfUsePeriod]] = field(default=None)  # Time-of-use periods
-    
-    # Legacy fields for backward compatibility
-    peak_buy_price: Optional[float] = None
-    offpeak_buy_price: Optional[float] = None
-    night_buy_price: Optional[float] = None
-    peak_buyback_price: Optional[float] = None
-    offpeak_buyback_price: Optional[float] = None
-    night_buyback_price: Optional[float] = None
-    solar_buyback_price: Optional[float] = None  # Single buyback price (legacy)
-    
-    def __post_init__(self):
-        # If time_periods not provided, create from legacy fields
-        if self.time_periods is None:
-            self.time_periods = []
-            
-            # Handle 3-tier pricing if all prices are provided
-            if (self.peak_buy_price is not None and 
-                self.offpeak_buy_price is not None and 
-                self.night_buy_price is not None):
-                
-                # Peak: 7-11am and 5-9pm on weekdays
-                self.time_periods.append(TimeOfUsePeriod(
-                    name="peak",
-                    buy_price=self.peak_buy_price,
-                    buyback_price=self.peak_buyback_price or self.solar_buyback_price or 0,
-                    time_ranges=[
-                        {"start_hour": 7, "end_hour": 11, "days": [0, 1, 2, 3, 4]},
-                        {"start_hour": 17, "end_hour": 21, "days": [0, 1, 2, 3, 4]}
-                    ]
-                ))
-                
-                # Off-peak: 11am-5pm and 9-11pm weekdays, 7am-11pm weekends
-                self.time_periods.append(TimeOfUsePeriod(
-                    name="offpeak",
-                    buy_price=self.offpeak_buy_price,
-                    buyback_price=self.offpeak_buyback_price or self.solar_buyback_price or 0,
-                    time_ranges=[
-                        {"start_hour": 11, "end_hour": 17, "days": [0, 1, 2, 3, 4]},
-                        {"start_hour": 21, "end_hour": 23, "days": [0, 1, 2, 3, 4]},
-                        {"start_hour": 7, "end_hour": 23, "days": [5, 6]}
-                    ]
-                ))
-                
-                # Night: 11pm-7am every day
-                self.time_periods.append(TimeOfUsePeriod(
-                    name="night",
-                    buy_price=self.night_buy_price,
-                    buyback_price=self.night_buyback_price or self.solar_buyback_price or 0,
-                    time_ranges=[
-                        {"start_hour": 23, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
-                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
-                    ]
-                ))
-            
-            # Handle legacy 2-tier pricing
-            elif self.peak_buy_price is not None and self.offpeak_buy_price is not None:
-                self.time_periods.append(TimeOfUsePeriod(
-                    name="peak",
-                    buy_price=self.peak_buy_price,
-                    buyback_price=self.solar_buyback_price or 0,
-                    time_ranges=[
-                        {"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}
-                    ]
-                ))
-                
-                self.time_periods.append(TimeOfUsePeriod(
-                    name="offpeak",
-                    buy_price=self.offpeak_buy_price,
-                    buyback_price=self.solar_buyback_price or 0,
-                    time_ranges=[
-                        {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
-                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
-                    ]
-                ))
+    time_periods: List[TimeOfUsePeriod]  # Time-of-use periods (now mandatory)
+    gst_applicable: bool = False    # Apply 15% GST to all costs if True
     
     def get_pricing(self, timestamp: pd.Timestamp) -> tuple:
         """Get the electricity buy and buyback price for a given timestamp"""
@@ -143,7 +70,10 @@ class EnergyProvider:
     
     def get_daily_charge(self, date: pd.Timestamp) -> float:
         """Get the daily charge for a given date"""
-        return self.daily_charge
+        charge = self.daily_charge
+        if self.gst_applicable:
+            charge *= 1.15  # Apply 15% GST
+        return charge
 
 class EnergyProviderComparison:
     """Simulates energy costs across multiple providers using historical data"""
@@ -165,11 +95,27 @@ class EnergyProviderComparison:
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
-            
+
             for provider_data in config['providers']:
-                provider = EnergyProvider(**provider_data)
+                # Convert time_periods from dict format to TimeOfUsePeriod objects
+                time_periods = []
+                for period_data in provider_data['time_periods']:
+                    time_period = TimeOfUsePeriod(
+                        name=period_data['name'],
+                        buy_price=period_data['buy_price'],
+                        buyback_price=period_data['buyback_price'],
+                        time_ranges=period_data['time_ranges']
+                    )
+                    time_periods.append(time_period)
+
+                provider = EnergyProvider(
+                    name=provider_data['name'],
+                    daily_charge=provider_data['daily_charge'],
+                    time_periods=time_periods,
+                    gst_applicable=provider_data.get('gst_applicable', False)
+                )
                 self.add_provider(provider)
-                
+
         except Exception as e:
             print(f"Error loading provider config: {e}")
             return False
@@ -283,6 +229,8 @@ class EnergyProviderComparison:
             
             # Calculate costs for this timestep
             energy_cost = grid_purchase * buy_price - grid_sale * buyback_price
+            if provider.gst_applicable:
+                energy_cost *= 1.15  # Apply 15% GST to energy costs
             
             result = {
                 'timestamp': timestamp,
@@ -534,41 +482,69 @@ def create_sample_providers():
     providers = [
         EnergyProvider(
             name="PowerCorp Standard",
-            peak_buy_price=0.28,
-            offpeak_buy_price=0.12,
-            solar_buyback_price=0.08,
-            daily_charge=1.20
+            daily_charge=1.20,
+            gst_applicable=False,
+            time_periods=[
+                TimeOfUsePeriod(
+                    name="peak",
+                    buy_price=0.28,
+                    buyback_price=0.08,
+                    time_ranges=[{"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}]
+                ),
+                TimeOfUsePeriod(
+                    name="offpeak",
+                    buy_price=0.12,
+                    buyback_price=0.08,
+                    time_ranges=[
+                        {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+                    ]
+                )
+            ]
         ),
         EnergyProvider(
-            name="GreenEnergy Plus", 
-            peak_buy_price=0.32,
-            offpeak_buy_price=0.08,
-            solar_buyback_price=0.12,
-            daily_charge=0.80
+            name="GreenEnergy Plus",
+            daily_charge=0.80,
+            gst_applicable=True,
+            time_periods=[
+                TimeOfUsePeriod(
+                    name="peak",
+                    buy_price=0.32,
+                    buyback_price=0.12,
+                    time_ranges=[{"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}]
+                ),
+                TimeOfUsePeriod(
+                    name="offpeak",
+                    buy_price=0.08,
+                    buyback_price=0.12,
+                    time_ranges=[
+                        {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+                    ]
+                )
+            ]
         ),
         EnergyProvider(
             name="EcoUtility Premium",
-            peak_buy_price=0.26,
-            offpeak_buy_price=0.15,
-            solar_buyback_price=0.10,
-            daily_charge=1.50
-        ),
-        EnergyProvider(
-            name="SolarFriend Co",
-            peak_buy_price=0.30,
-            offpeak_buy_price=0.10,
-            solar_buyback_price=0.15,
-            daily_charge=0.95
-        ),
-        EnergyProvider(
-            name="FlexiRate 3-Tier",
-            peak_buy_price=0.35,
-            offpeak_buy_price=0.18,
-            night_buy_price=0.12,
-            peak_buyback_price=0.10,
-            offpeak_buyback_price=0.08,
-            night_buyback_price=0.05,
-            daily_charge=1.50
+            daily_charge=1.50,
+            gst_applicable=False,
+            time_periods=[
+                TimeOfUsePeriod(
+                    name="peak",
+                    buy_price=0.26,
+                    buyback_price=0.10,
+                    time_ranges=[{"start_hour": 7, "end_hour": 21, "days": [0, 1, 2, 3, 4, 5, 6]}]
+                ),
+                TimeOfUsePeriod(
+                    name="offpeak",
+                    buy_price=0.15,
+                    buyback_price=0.10,
+                    time_ranges=[
+                        {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+                        {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+                    ]
+                )
+            ]
         )
     ]
     return providers
