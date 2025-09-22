@@ -1,0 +1,125 @@
+{
+  "providers": [
+    {
+      "name": "OctopusPeaker",
+      "daily_charge": 2.872,
+      "gst_applicable": true,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.312,
+          "buyback_price": 0.40,
+          "time_ranges": [
+            {"start_hour": 7, "end_hour": 11, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 17, "end_hour": 21, "days": [0, 1, 2, 3, 4]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.243,
+          "buyback_price": 0.10,
+          "time_ranges": [
+            {"start_hour": 11, "end_hour": 17, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 21, "end_hour": 23, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 7, "end_hour": 23, "days": [5, 6]}
+          ]
+        },
+        {
+          "name": "night",
+          "buy_price": 0.156,
+          "buyback_price": 0.05,
+          "time_ranges": [
+            {"start_hour": 23, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+            {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Ecotricity",
+      "daily_charge": 2.27,
+      "gst_applicable": true,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.2770,
+          "buyback_price": 0.21,
+          "time_ranges": [
+            {"start_hour": 7, "end_hour": 11, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 17, "end_hour": 21, "days": [0, 1, 2, 3, 4]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.187,
+          "buyback_price": 0.16,
+          "time_ranges": [
+            {"start_hour": 11, "end_hour": 17, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 21, "end_hour": 23, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 7, "end_hour": 23, "days": [5, 6]}
+          ]
+        },
+        {
+          "name": "night",
+          "buy_price": 0.183,
+          "buyback_price": 0.16,
+          "time_ranges": [
+            {"start_hour": 23, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+            {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Meridian Solar",
+      "daily_charge": 2.60,
+      "gst_applicable": false,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.242,
+          "buyback_price": 0.17,
+          "time_ranges": [
+            {"start_hour": 7, "end_hour": 23, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.192,
+          "buyback_price": 0.17,
+          "time_ranges": [
+            {"start_hour": 23, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+            {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Meridian EV",
+      "daily_charge": 1.83,
+      "gst_applicable": true,
+      "time_periods": [
+        {
+          "name": "peak",
+          "buy_price": 0.2885,
+          "buyback_price": 0.12,
+          "time_ranges": [
+            {"start_hour": 7, "end_hour": 11, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 17, "end_hour": 21, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 7, "end_hour": 21, "days": [5, 6]}
+          ]
+        },
+        {
+          "name": "offpeak",
+          "buy_price": 0.1147,
+          "buyback_price": 0.12,
+          "time_ranges": [
+            {"start_hour": 11, "end_hour": 17, "days": [0, 1, 2, 3, 4]},
+            {"start_hour": 21, "end_hour": 24, "days": [0, 1, 2, 3, 4, 5, 6]},
+            {"start_hour": 0, "end_hour": 7, "days": [0, 1, 2, 3, 4, 5, 6]}
+          ]
+        }
+      ]
+    }
+  ]
+}
